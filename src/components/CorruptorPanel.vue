@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { CorruptionMode } from '../gpu/corruptor'
-import { useChatStore } from '../stores/chats'
 import { useModelStore, type ModelStatus } from '../stores/model'
 import { showToast } from '../toast'
 
@@ -20,7 +19,7 @@ const HELP = {
   jitter:
     'When this option is selected, each weight selected for corruption is multiplied by a random factor within this many percent of 1, so 50 scales it anywhere from 0.5x to 1.5x. It works on the numbers rather than their bytes, so weights never blow up. Only floating point weights take part. Every CORRUPT! press rolls new factors. Good starting points: TinyLlama at every 1st byte, ±35%. Stable Diffusion at every 16th byte, ±50%.',
 }
-// Hand-tuned for Stable Diffusion's fp32 weights. The corruptor also starts out on these.
+// Hand-tuned settings for both models. The corruptor also starts out on these.
 const SWEETSPOT = { everyNthByte: 90, mode: 'jitter', jitterPercent: 100 } as const
 const BYTE_MAX = 0xff
 const WEIGHT_CHANGE_LABELS: Partial<Record<ModelStatus, string>> = {
@@ -57,7 +56,6 @@ const POSITIVE_INTEGER: FieldFormat = {
 }
 
 const model = useModelStore()
-const chats = useChatStore()
 
 const startByte = ref(0)
 const endByte = ref(0x1000)
@@ -339,7 +337,7 @@ const applySweetspot = () => {
         <md-filled-button class="corrupt-button" :disabled="!model.isReady" @click="corrupt">
           CORRUPT!
         </md-filled-button>
-        <md-filled-tonal-button v-if="chats.mode === 'image'" :disabled="!model.isReady" @click="applySweetspot">
+        <md-filled-tonal-button :disabled="!model.isReady" @click="applySweetspot">
           <md-icon slot="icon">tune</md-icon>
           Apply sweetspot
         </md-filled-tonal-button>
