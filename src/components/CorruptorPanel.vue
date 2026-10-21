@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { CorruptionMode } from '../gpu/corruptor'
-import { useLlmStore } from '../stores/llm'
+import { useChatStore } from '../stores/chats'
+import { useModelStore, type ModelStatus } from '../stores/model'
 import { showToast } from '../toast'
 
 const HELP = {
@@ -16,8 +17,16 @@ const HELP = {
     'When this option is selected, each byte selected for corruption is shifted right by the number of bytes specified by this decimal value. This value can be negative, resulting in a shift to the left.',
   replace:
     'When this option is selected, each byte selected for corruption is compared to the first hexadecimal value. If it matches, it is replaced by the second hexadecimal value.',
+  jitter:
+    'When this option is selected, each weight selected for corruption is multiplied by a random factor within this many percent of 1, so 50 scales it anywhere from 0.5x to 1.5x. It works on the numbers rather than their bytes, so weights never blow up. Only floating point weights take part. Every CORRUPT! press rolls new factors. Good starting points: TinyLlama at every 1st byte, ±35%. Stable Diffusion at every 16th byte, ±50%.',
 }
+// Hand-tuned for Stable Diffusion's fp32 weights. The corruptor also starts out on these.
+const SWEETSPOT = { everyNthByte: 90, mode: 'jitter', jitterPercent: 100 } as const
 const BYTE_MAX = 0xff
+const WEIGHT_CHANGE_LABELS: Partial<Record<ModelStatus, string>> = {
+  corrupting: 'Corrupting the weights...',
+  restoring: 'Restoring the original weights...',
+}
 
 interface FieldFormat {
   parse(text: string): number | undefined
@@ -47,63 +56,68 @@ const POSITIVE_INTEGER: FieldFormat = {
   print: String,
 }
 
-const llm = useLlmStore()
+const model = useModelStore()
+const chats = useChatStore()
 
 const startByte = ref(0)
 const endByte = ref(0x1000)
 const increment = ref(0x1000)
 const autoEnd = ref(true)
-const everyNthByte = ref(140)
-const mode = ref<CorruptionMode>('add')
+const everyNthByte = ref<number>(SWEETSPOT.everyNthByte)
+const mode = ref<CorruptionMode>(SWEETSPOT.mode)
 const addValue = ref(25)
 const shiftBytes = ref(0)
 const replaceFrom = ref(0)
 const replaceTo = ref(0)
+const jitterPercent = ref<number>(SWEETSPOT.jitterPercent)
 const help = ref<string>()
 
-const lastByte = computed(() => llm.modelBytes - 1)
-const controlsDisabled = computed(() => llm.modelBytes === 0)
+const lastByte = computed(() => model.modelBytes - 1)
+const controlsDisabled = computed(() => model.modelBytes === 0)
 const endLocked = computed(() => controlsDisabled.value || autoEnd.value)
 const loadingLabel = computed(
-  () => `${llm.isDownloading ? 'Downloading' : 'Loading onto GPU'} ${Math.floor(llm.progress * 100)}%`,
+  () => `${model.progress.downloading ? 'Downloading' : 'Loading onto GPU'} ${Math.floor(model.progress.fraction * 100)}%`,
 )
 
 // Every edit funnels through here, so the range never leaves the weight bytes.
-function keepRangeInModel() {
+const keepRangeInModel = () => {
   startByte.value = clamp(startByte.value, 0, lastByte.value)
   endByte.value = autoEnd.value ? lastByte.value : clamp(endByte.value, startByte.value, lastByte.value)
 }
 
-watch([() => llm.modelBytes, autoEnd], keepRangeInModel)
+// Size drops to zero while models swap. Clamping to that would push the range negative.
+watch([() => model.modelBytes, autoEnd], () => {
+  if (model.modelBytes > 0) keepRangeInModel()
+})
 
-function raiseStart() {
+const raiseStart = () => {
   startByte.value = Math.min(startByte.value + increment.value, endByte.value)
   keepRangeInModel()
 }
 
-function lowerStart() {
+const lowerStart = () => {
   startByte.value = Math.max(startByte.value - increment.value, 0)
   keepRangeInModel()
 }
 
-function raiseEnd() {
+const raiseEnd = () => {
   endByte.value += increment.value
   keepRangeInModel()
 }
 
-function lowerEnd() {
+const lowerEnd = () => {
   endByte.value = Math.max(endByte.value - increment.value, startByte.value)
   keepRangeInModel()
 }
 
-function raiseRange() {
+const raiseRange = () => {
   const width = endByte.value - startByte.value
   endByte.value = Math.min(endByte.value + increment.value, lastByte.value)
   startByte.value = Math.min(startByte.value + increment.value, endByte.value - width)
   keepRangeInModel()
 }
 
-function lowerRange() {
+const lowerRange = () => {
   const width = endByte.value - startByte.value
   startByte.value = Math.max(startByte.value - increment.value, 0)
   endByte.value = startByte.value === 0 ? width : endByte.value - increment.value
@@ -111,7 +125,7 @@ function lowerRange() {
 }
 
 // Shows the invalid text the way the original did, then puts the last good value back.
-function readField(event: Event, current: number, format: FieldFormat, name: string) {
+const readField = (event: Event, current: number, format: FieldFormat, name: string) => {
   const field = event.target as HTMLInputElement
   const value = format.parse(field.value.trim())
   if (value !== undefined) return value
@@ -120,22 +134,22 @@ function readField(event: Event, current: number, format: FieldFormat, name: str
   return current
 }
 
-function updateStart(event: Event) {
+const updateStart = (event: Event) => {
   startByte.value = readField(event, startByte.value, HEX, 'start byte')
   keepRangeInModel()
 }
 
-function updateEnd(event: Event) {
+const updateEnd = (event: Event) => {
   endByte.value = readField(event, endByte.value, HEX, 'end byte')
   keepRangeInModel()
 }
 
-function clamp(value: number, min: number, max: number) {
+const clamp = (value: number, min: number, max: number) => {
   return Math.min(Math.max(value, min), max)
 }
 
-function corrupt() {
-  llm.corrupt({
+const corrupt = () => {
+  model.corrupt({
     startByte: startByte.value,
     endByte: endByte.value,
     everyNthByte: everyNthByte.value,
@@ -144,7 +158,15 @@ function corrupt() {
     shiftBytes: shiftBytes.value,
     replaceFrom: replaceFrom.value,
     replaceTo: replaceTo.value,
+    jitterPercent: jitterPercent.value,
   })
+}
+
+const applySweetspot = () => {
+  everyNthByte.value = SWEETSPOT.everyNthByte
+  mode.value = SWEETSPOT.mode
+  jitterPercent.value = SWEETSPOT.jitterPercent
+  corrupt()
 }
 </script>
 
@@ -152,8 +174,8 @@ function corrupt() {
   <aside class="corruptor">
     <h2 class="md-typescale-title-large">Corruptor</h2>
     <p class="caption md-typescale-body-small">
-      <template v-if="llm.modelBytes">Weights: 0 to {{ HEX.print(lastByte) }} ({{ llm.modelBytes.toLocaleString() }} bytes)</template>
-      <template v-else>Load the LLM to unlock the controls.</template>
+      <template v-if="model.modelBytes">Weights: 0 to {{ HEX.print(lastByte) }} ({{ model.modelBytes.toLocaleString() }} bytes)</template>
+      <template v-else>Load the model to unlock the controls.</template>
     </p>
 
     <div class="range">
@@ -285,29 +307,50 @@ function corrupt() {
       <md-icon-button aria-label="Replace help" @click="help = HELP.replace"><md-icon>help</md-icon></md-icon-button>
     </div>
 
+    <div class="row">
+      <md-radio name="mode" aria-label="Jitter" :checked="mode === 'jitter'" :disabled="controlsDisabled" @change="mode = 'jitter'" />
+      <md-outlined-text-field
+        class="short"
+        label="Jitter weights by"
+        prefix-text="±"
+        suffix-text="%"
+        :value="POSITIVE_INTEGER.print(jitterPercent)"
+        :disabled="controlsDisabled"
+        @change="jitterPercent = readField($event, jitterPercent, POSITIVE_INTEGER, 'jitter amount')"
+      />
+      <md-icon-button aria-label="Jitter help" @click="help = HELP.jitter"><md-icon>help</md-icon></md-icon-button>
+    </div>
+
     <div class="action">
-      <template v-if="llm.status === 'checking'">
+      <template v-if="model.status === 'checking'">
         <md-linear-progress indeterminate />
         <span class="md-typescale-body-medium">Looking for a saved model...</span>
       </template>
-      <template v-else-if="llm.status === 'loading'">
-        <md-linear-progress :value="llm.progress" />
+      <template v-else-if="model.status === 'loading'">
+        <md-linear-progress :value="model.progress.fraction" />
         <span class="md-typescale-label-large">{{ loadingLabel }}</span>
-        <span class="caption md-typescale-body-small">{{ llm.progressText }}</span>
+        <span class="caption md-typescale-body-small">{{ model.progress.text }}</span>
       </template>
-      <md-filled-button v-else-if="llm.status === 'absent' || llm.status === 'failed'" @click="llm.load()">
+      <md-filled-button v-else-if="model.status === 'absent' || model.status === 'failed'" @click="model.load()">
         <md-icon slot="icon">download</md-icon>
-        Load LLM
+        Load {{ model.modelName }}
       </md-filled-button>
       <template v-else>
-        <md-filled-button class="corrupt-button" :disabled="!llm.isReady" @click="corrupt">
-          <md-icon slot="icon">bolt</md-icon>
+        <md-filled-button class="corrupt-button" :disabled="!model.isReady" @click="corrupt">
           CORRUPT!
         </md-filled-button>
-        <md-linear-progress v-if="llm.status === 'corrupting'" indeterminate />
+        <md-filled-tonal-button v-if="chats.mode === 'image'" :disabled="!model.isReady" @click="applySweetspot">
+          <md-icon slot="icon">tune</md-icon>
+          Apply sweetspot
+        </md-filled-tonal-button>
+        <md-outlined-button :disabled="!model.isReady || !model.isCorrupted" @click="model.restore()">
+          <md-icon slot="icon">restore</md-icon>
+          Restore original model
+        </md-outlined-button>
+        <md-linear-progress v-if="model.status in WEIGHT_CHANGE_LABELS" indeterminate />
         <span class="ready md-typescale-label-large">
           <md-icon>check_circle</md-icon>
-          {{ llm.status === 'corrupting' ? 'Corrupting the weights...' : 'TinyLlama is loaded' }}
+          {{ WEIGHT_CHANGE_LABELS[model.status] ?? (model.isCorrupted ? 'model is corrupted' : 'model is loaded') }}
         </span>
       </template>
     </div>

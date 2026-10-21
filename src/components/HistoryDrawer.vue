@@ -7,12 +7,12 @@ const chats = useChatStore()
 <template>
   <nav class="drawer">
     <h2 class="heading md-typescale-title-small">Chats</h2>
-    <p v-if="chats.chats.length === 0" class="empty md-typescale-body-medium">No chats yet.</p>
+    <p v-if="chats.modeChats.length === 0" class="empty md-typescale-body-medium">No chats yet.</p>
     <div
-      v-for="chat in chats.chats"
+      v-for="chat in chats.modeChats"
       :key="chat.id"
       class="chat-row"
-      :class="{ active: chat.id === chats.activeChatId }"
+      :class="{ active: chat.id === chats.activeChat?.id }"
     >
       <md-list-item type="button" class="chat-link" @click="chats.openChat(chat.id)">
         {{ chat.title }}

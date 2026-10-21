@@ -6,7 +6,7 @@ export const toastMessage = ref('')
 
 let hideTimer: ReturnType<typeof setTimeout> | undefined
 
-export function showToast(message: string) {
+export const showToast = (message: string) => {
   toastMessage.value = message
   clearTimeout(hideTimer)
   hideTimer = setTimeout(() => (toastMessage.value = ''), TOAST_DURATION_MS)

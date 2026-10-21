@@ -1,51 +1,66 @@
 <script setup lang="ts">
-import { nextTick, ref, useTemplateRef, watch } from 'vue'
-import { useChatStore } from '../stores/chats'
-import { useLlmStore, type LlmStatus } from '../stores/llm'
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
+import { useChatStore, type ChatMode } from '../stores/chats'
+import { useModelStore, type ModelStatus } from '../stores/model'
 
-const PLACEHOLDERS: Record<LlmStatus, string> = {
+const PLACEHOLDERS: Record<Exclude<ModelStatus, 'ready'>, string> = {
   checking: 'Looking for a saved model...',
-  absent: 'Load the LLM to start chatting',
-  loading: 'Loading the LLM...',
-  failed: 'Load the LLM to start chatting',
-  ready: 'Send a message',
+  absent: 'Load the model to start chatting',
+  loading: 'Loading the model...',
+  failed: 'Load the model to start chatting',
   generating: 'Model is responding...',
   corrupting: 'Corrupting the weights...',
+  restoring: 'Restoring the original weights...',
+}
+const READY_PLACEHOLDERS: Record<ChatMode, string> = {
+  text: 'Send a message',
+  image: 'Describe an image',
+}
+const EMPTY_CHAT_TEXT: Record<ChatMode, string> = {
+  text: 'Ask me Anything',
+  image: 'Imagine Anything',
 }
 
 const chats = useChatStore()
-const llm = useLlmStore()
+const model = useModelStore()
 const draft = ref('')
 const messageList = useTemplateRef('messageList')
+const placeholder = computed(() =>
+  model.status === 'ready' ? READY_PLACEHOLDERS[chats.mode] : PLACEHOLDERS[model.status],
+)
 
 watch(
-  () => chats.activeChat?.messages.at(-1)?.content,
+  () => [chats.activeChat?.messages.at(-1)?.content, chats.activeChat?.messages.at(-1)?.image],
   async () => {
     await nextTick()
     messageList.value?.scrollTo({ top: messageList.value.scrollHeight })
   },
 )
 
-async function send() {
+const isPending = (index: number) =>
+  model.status === 'generating' && index === chats.activeChat!.messages.length - 1
+
+const send = async () => {
   const prompt = draft.value.trim()
-  if (!prompt || !llm.isReady) return
+  if (!prompt || !model.isReady) return
   draft.value = ''
   chats.addMessage({ role: 'user', content: prompt })
   const history = chats.activeChat!.messages.map(({ role, content }) => ({ role, content }))
   const reply = chats.addMessage({ role: 'assistant', content: '' })
-  await llm.reply(history, (text) => (reply.content += text))
+  await model.respond(history, reply)
 }
 </script>
 
 <template>
   <section class="chat">
     <div ref="messageList" class="messages">
-      <p v-if="!chats.activeChat" class="empty md-typescale-headline-small">Ask me Anything</p>
+      <p v-if="!chats.activeChat" class="empty md-typescale-headline-small">{{ EMPTY_CHAT_TEXT[chats.mode] }}</p>
       <template v-for="(message, index) in chats.activeChat?.messages" :key="index">
         <div v-if="message.role === 'user'" class="bubble md-typescale-body-large">{{ message.content }}</div>
         <div v-else class="answer md-typescale-body-large">
-          <template v-if="message.content">{{ message.content }}</template>
-          <md-circular-progress v-else-if="llm.status === 'generating'" indeterminate class="typing" />
+          <img v-if="message.image" class="image" :src="message.image" :alt="chats.activeChat!.messages[index - 1]?.content" />
+          <template v-else-if="message.content">{{ message.content }}</template>
+          <md-circular-progress v-else-if="isPending(index)" indeterminate class="typing" />
           <span v-else class="no-output">(no output)</span>
         </div>
       </template>
@@ -55,13 +70,13 @@ async function send() {
         class="prompt"
         type="textarea"
         rows="2"
-        :label="PLACEHOLDERS[llm.status]"
+        :label="placeholder"
         :value="draft"
-        :disabled="!llm.isReady"
+        :disabled="!model.isReady"
         @input="draft = ($event.target as HTMLTextAreaElement).value"
         @keydown.enter.exact.prevent="send"
       />
-      <md-icon-button type="submit" aria-label="Send" :disabled="!llm.isReady || !draft.trim()">
+      <md-icon-button type="submit" aria-label="Send" :disabled="!model.isReady || !draft.trim()">
         <md-icon>send</md-icon>
       </md-icon-button>
     </form>
@@ -103,6 +118,12 @@ async function send() {
 .answer {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.image {
+  display: block;
+  width: min(512px, 100%);
+  border-radius: 12px;
 }
 
 .typing {

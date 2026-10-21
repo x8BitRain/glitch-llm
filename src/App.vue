@@ -1,17 +1,23 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import ChatPane from './components/ChatPane.vue'
 import CorruptorPanel from './components/CorruptorPanel.vue'
 import HistoryDrawer from './components/HistoryDrawer.vue'
 import { useChatStore } from './stores/chats'
-import { useLlmStore } from './stores/llm'
+import { useModelStore } from './stores/model'
 import { toastMessage } from './toast'
 
-const chats = useChatStore()
-const llm = useLlmStore()
-const isHistoryOpen = ref(false)
+const MODE_SWITCHES = {
+  text: { label: 'Text Corruptions', icon: 'chat' },
+  image: { label: 'Image Corruptions', icon: 'image' },
+}
 
-onMounted(llm.loadIfDownloaded)
+const chats = useChatStore()
+const model = useModelStore()
+const isHistoryOpen = ref(false)
+const otherMode = computed(() => (chats.mode === 'text' ? 'image' : 'text'))
+
+watch(() => chats.mode, model.activate, { immediate: true })
 </script>
 
 <template>
@@ -27,6 +33,10 @@ onMounted(llm.loadIfDownloaded)
           New chat
         </md-filled-tonal-button>
         <span class="title md-typescale-title-medium">{{ chats.activeChat?.title ?? 'Glitch LLM' }}</span>
+        <md-outlined-button class="mode-switch" :disabled="!model.isIdle" @click="chats.switchMode(otherMode)">
+          <md-icon slot="icon">{{ MODE_SWITCHES[otherMode].icon }}</md-icon>
+          {{ MODE_SWITCHES[otherMode].label }}
+        </md-outlined-button>
       </header>
       <ChatPane />
     </main>
@@ -56,14 +66,19 @@ onMounted(llm.loadIfDownloaded)
 }
 
 .title {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.mode-switch {
+  flex-shrink: 0;
+}
+
 .snackbar {
   position: fixed;
-  bottom: 24px;
+  top: 24px;
   left: 50%;
   max-width: 560px;
   padding: 14px 16px;
